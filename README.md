@@ -1,14 +1,8 @@
 [![npm](https://img.shields.io/npm/dm/waveform-playlist.svg)](https://www.npmjs.com/package/waveform-playlist)
 
-## Sponsors
+## Original source
 
-<p align="center">
-  <a href="https://moises.ai/" target="_blank">
-    <img width="222px" src="https://raw.githubusercontent.com/naomiaro/waveform-playlist/main/ghpages/img/logos/moises-ai.svg">
-  </a>
-</p>
-
-[Become a sponsor](https://github.com/sponsors/naomiaro)
+This is a copy of Afripods waveform-playlist fork, originally located at: https://github.com/Afripods/audio-editor.git 
 
 # Waveform Playlist
 
