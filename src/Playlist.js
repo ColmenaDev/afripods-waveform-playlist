@@ -23,26 +23,22 @@ export default class {
     this.tracks = [];
     this.lanes = [];
     this.defaultLaneColors = [
-      { outer: "#2188BF", inner: "#9dd2ee" },
-      { outer: "#FDD366", inner: "#feedc2" },
-      { outer: "#F2765D", inner: "#fac8be" },
-      { outer: "#75BB5C", inner: "#c8e4be" },
-      { outer: "#64D2CC", inner: "#c1edeb" },
-      { outer: "#E9659E", inner: "#f6c1d8" },
-      { outer: "#F09139", inner: "#f9d3b0" },
-      { outer: "#8B79E3", inner: "#d1c9f4" },
-      { outer: "#9F6044", inner: "#ddbeb0" },
+      { outer: "#1031DE", inner: "#72B2D4" },
+      { outer: "#DE1098", inner: "#EA7ED8" },
+      { outer: "#DE8C10", inner: "#F8DC97" },
+      { outer: "#059814", inner: "#74D472" },
+      { outer: "#4F0598", inner: "#AF72D4" },
+      { outer: "#980505", inner: "#D4728A" },
+      { outer: "#1A9BA4", inner: "#72CFD4" },
     ];
     this.laneColors = [
-      { outer: "#2188BF", inner: "#9dd2ee" },
-      { outer: "#FDD366", inner: "#feedc2" },
-      { outer: "#F2765D", inner: "#fac8be" },
-      { outer: "#75BB5C", inner: "#c8e4be" },
-      { outer: "#64D2CC", inner: "#c1edeb" },
-      { outer: "#E9659E", inner: "#f6c1d8" },
-      { outer: "#F09139", inner: "#f9d3b0" },
-      { outer: "#8B79E3", inner: "#d1c9f4" },
-      { outer: "#9F6044", inner: "#ddbeb0" },
+      { outer: "#1031DE", inner: "#72B2D4" },
+      { outer: "#DE1098", inner: "#EA7ED8" },
+      { outer: "#DE8C10", inner: "#F8DC97" },
+      { outer: "#059814", inner: "#74D472" },
+      { outer: "#4F0598", inner: "#AF72D4" },
+      { outer: "#980505", inner: "#D4728A" },
+      { outer: "#1A9BA4", inner: "#72CFD4" },
     ];
     this.soloedTracks = [];
     this.mutedTracks = [];
@@ -58,6 +54,7 @@ export default class {
     // whether a user is scrolling the waveform
     this.isScrolling = false;
 
+    this.overlapLastCheck = false;
     this.fadeType = "logarithmic";
     this.masterGain = 1;
     this.annotations = [];
@@ -253,7 +250,7 @@ export default class {
       this.drawRequest();
     });
 
-    ee.on("shift", (deltaTime, track, lastShift) => {
+    ee.on("shift", (deltaTime, track, lastShift, trackStart) => {
       let newStartTime = track.getStartTime() + deltaTime;
       if (lastShift) {
         if (newStartTime < 0) {
@@ -263,7 +260,9 @@ export default class {
           this.pause();
           this.play();
         }
+        newStartTime = this.checkOverlap(newStartTime, trackStart, track);
       }
+
       track.setStartTime(newStartTime);
       this.lanes.forEach((lane) => {
         const endTime =
@@ -272,6 +271,7 @@ export default class {
             : 0;
         lane.setEndTime(endTime);
       });
+      this.overlapLastCheck = false;
       this.adjustDuration();
       this.drawRequest();
     });
@@ -597,14 +597,30 @@ export default class {
       this.setNumberLanes(numberLanes);
     });
 
+    ee.on("setActiveCut", (customID) => {
+      const track =
+        customID && customID !== undefined
+          ? this.getTrackByCustomID(customID)
+          : null;
+      if (track !== undefined) {
+        this.ee.emit("select", track.startTime, track.startTime, track);
+        this.ee.emit("cutSelected");
+      }
+    });
+
     ee.on("handleTrackLaneChange", (obj) => {
       const track = this.getTrackByCustomID(obj.trackId);
       const oldLane = this.getLaneByID(track.lane);
       const newLane = this.getLaneByID(obj.laneId);
       const index = this.mutedTracks.indexOf(track);
 
+      track.setLane(newLane.id);
+      oldLane.removeTrack(track);
+      oldLane.recalculateEndTime();
+      track.setWaveOutlineColor(newLane.color.inner);
       if (!newLane.muted) {
         if (index > -1) {
+          track.setWaveOutlineColor(newLane.color.inner);
           this.mutedTracks.splice(index, 1);
         }
       } else {
@@ -612,12 +628,36 @@ export default class {
           this.mutedTracks.push(track);
         }
       }
-
-      track.setLane(newLane.id);
-      oldLane.removeTrack(track);
+      let newStartTime = this.checkOverlap(
+        track.startTime,
+        track.startTime,
+        track,
+        true
+      );
+      if (newStartTime === 0 || newStartTime < 0) {
+        track.setStartTime(newLane.endTime);
+      } else {
+        track.setStartTime(newStartTime);
+      }
       newLane.addTrack(track);
-      track.setWaveOutlineColor(newLane.color.inner);
+
       this.adjustDuration();
+      this.drawRequest();
+    });
+    ee.on("laneMute", (lane) => {
+      lane.tracks.forEach((track) => {
+        const index = this.mutedTracks.indexOf(track);
+        if (!lane.muted) {
+          if (index > -1) {
+            this.mutedTracks.splice(index, 1);
+          }
+        } else {
+          if (index === -1) {
+            this.mutedTracks.push(track);
+          }
+        }
+      });
+      this.adjustTrackPlayout();
       this.drawRequest();
     });
   }
@@ -742,6 +782,9 @@ export default class {
             lane.setDuration(track.duration);
             lane.setEndTime(track.endTime);
             this.lanes.push(lane);
+            if (track.lane === 0) {
+              this.ee.emit("firstTrackLoaded");
+            }
           }
           const laneObject = this.getLaneByID(track.lane);
           track.setWaveOutlineColor(laneObject.color.inner);
@@ -762,6 +805,78 @@ export default class {
       .catch((e) => {
         this.ee.emit("audiosourceserror", e);
       });
+  }
+
+  checkOverlap(newStartTime, oldStartTime, track, laneChange = false) {
+    const sTime = newStartTime;
+    const eTime = sTime + track.duration;
+    const trackStart = oldStartTime;
+    let overlapStart = false;
+    let overlapEnd = false;
+    this.lanes.forEach((lane) => {
+      if (lane.id === track.lane) {
+        lane.tracks.forEach((laneTrack) => {
+          if (track.customID !== laneTrack.customID) {
+            if (sTime < laneTrack.endTime && sTime > laneTrack.startTime) {
+              newStartTime = laneTrack.endTime;
+              overlapStart = true;
+            } else if (
+              eTime > laneTrack.startTime &&
+              sTime < laneTrack.endTime
+            ) {
+              newStartTime = laneTrack.startTime - track.duration;
+              overlapEnd = true;
+            } else if (
+              eTime < laneTrack.endTime &&
+              sTime < laneTrack.startTime &&
+              sTime + track.duration > laneTrack.startTime
+            ) {
+              newStartTime = lane.endTime;
+              overlapEnd = true;
+            }
+          }
+        });
+      }
+      if ((overlapEnd && overlapStart && !laneChange) || newStartTime < 0) {
+        newStartTime = trackStart;
+      }
+      if (overlapEnd && overlapStart && laneChange) {
+        newStartTime = newStartTime = lane.endTime;
+      }
+    });
+
+    let checkStartTime = newStartTime;
+    let checkEndTime = checkStartTime + track.duration;
+
+    this.lanes.forEach((lane) => {
+      if (lane.id === track.lane) {
+        lane.tracks.forEach((laneTrack) => {
+          if (track.customID !== laneTrack.customID) {
+            if (
+              checkStartTime < laneTrack.endTime &&
+              checkStartTime > laneTrack.startTime
+            ) {
+              newStartTime = laneTrack.endTime;
+              overlapStart = true;
+            } else if (
+              checkEndTime > laneTrack.startTime &&
+              checkStartTime < laneTrack.endTime
+            ) {
+              newStartTime = laneTrack.startTime - track.duration;
+              overlapEnd = true;
+            }
+          }
+        });
+        if ((overlapEnd && overlapStart && !laneChange) || newStartTime < 0) {
+          newStartTime = trackStart;
+        }
+        if (overlapEnd && overlapStart && laneChange) {
+          newStartTime = newStartTime = lane.endTime;
+        }
+      }
+    });
+
+    return newStartTime;
   }
 
   createTrackFromSplit({ trackToSplit, name, splitTime }) {
@@ -1003,6 +1118,10 @@ export default class {
 
     if (index > -1) {
       this.mutedTracks.splice(index, 1);
+      this.tracks.forEach((track) => {
+        const trackLane = this.getLaneByID(track.lane);
+        track.setWaveOutlineColor(trackLane.color.inner);
+      });
     } else {
       this.mutedTracks.push(track);
     }
@@ -1281,6 +1400,9 @@ export default class {
       this.lanes.push(lane);
       this.adjustDuration();
       this.drawRequest();
+      if (numberLanes === 0) {
+        this.ee.emit("firstTrackLoaded");
+      }
     }
   }
 
@@ -1562,8 +1684,10 @@ export default class {
               type: "button",
             },
             onclick: () => {
-              lane.muted ? lane.setMuted(false) : lane.setMuted(true);
-              this.drawRequest();
+              lane.muted
+                ? lane.setMuted(false, this)
+                : lane.setMuted(true, this);
+              this.ee.emit("laneMute", lane);
             },
           },
           ["Mute"]
@@ -1641,7 +1765,7 @@ export default class {
 
     const cursor = h("div.playback-indicator", {
       attributes: {
-        style: `position: absolute; width: 2px; height: calc(100% - 27px); margin: 0; padding: 0; top: 27px; left: calc(20px + ${playbackX}px); bottom: 0; z-index: 14; background: #f2765d; cursor: grab;`,
+        style: `position: absolute; width: 2px; height: calc(100% - 28.8px); margin: 0; padding: 0; top: 27px; left: calc(20px + ${playbackX}px); bottom: 0; z-index: 14; background: #f2765d; cursor: grab;`,
       },
     });
 
@@ -1659,7 +1783,23 @@ export default class {
       "div.playlist-scrollable",
       {
         attributes: {
-          style: "position: relative;",
+          style: "position: relative; pointer-events: auto;",
+        },
+        onclick: (e) => {
+          if (!e.target.classList.contains("playlist-overlay")) {
+            e.preventDefault();
+            const startX = e.offsetX - 20;
+            const sampleRate = this.sampleRate;
+            const samplesPerPixel = this.samplesPerPixel;
+            const startTime = pixelsToSeconds(
+              startX,
+              samplesPerPixel,
+              sampleRate
+            );
+            if (startTime < this.duration && startTime > 0) {
+              this.ee.emit("select", startTime, startTime, undefined);
+            }
+          }
         },
       },
       scrollableChildren
